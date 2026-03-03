@@ -31,7 +31,7 @@ python baai_rag_server.py
 {
   "mcpServers": {
     "local-knowledge": {
-      "command": "python",
+      "command": "D:/baai_rag/venv/Scripts/python.exe",
       "args": ["D:/baai_rag/baai_rag_server.py"]
     }
   }
