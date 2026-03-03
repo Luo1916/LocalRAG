@@ -9,14 +9,32 @@ import chromadb
 from chromadb.utils import embedding_functions
 
 # --- 1. 基础配置 ---
+import logging
+# 禁用所有默认的 logging，避免污染 MCP 的 stdout
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format='%(message)s')
+logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 BASE_DIR = r"D:\baai_rag"
 DB_PATH = os.path.join(BASE_DIR, "chroma_db_data")
 os.environ["HF_HOME"] = os.path.join(BASE_DIR, "hf_models")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+# 强制 Python 不要缓存 stdout 输出，避免 MCP 通信挂起
+os.environ["PYTHONUNBUFFERED"] = "1"
 
 # 初始化 MCP
 mcp = FastMCP("Local Knowledge (BAAI)")
 
-# --- 2. 硬件加速检测机制 ---
+# --- 2. 硬件加速及模型懒加载 ---
+# 全局变量占位
+best_device = None
+ef = None
+reranker = None
+client = None
+_initialized = False
+
 def detect_device() -> str:
     """尝试使用 CUDA，失败则使用 CPU"""
     try:
@@ -29,31 +47,44 @@ def detect_device() -> str:
     print("未能使用 CUDA，已回退至 CPU 运行。", file=sys.stderr)
     return "cpu"
 
-best_device = detect_device()
+def lazy_init():
+    global best_device, ef, reranker, client, _initialized
+    if _initialized:
+        return
+        
+    import sys
+    best_device = detect_device()
+    print("正在加载 BAAI 向量模型 (BAAI/bge-m3)...", file=sys.stderr)
 
-print("正在加载 BAAI 向量模型 (BAAI/bge-m3)...", file=sys.stderr)
+    # 强制将模型加载过程中的所有 print 重定向到 stderr
+    _original_stdout = sys.stdout
+    sys.stdout = sys.stderr
 
-# 初始化 BAAI/bge-m3 中文优化模型
-ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name="BAAI/bge-m3",
-    device=best_device 
-)
+    try:
+        # 初始化 BAAI/bge-m3 中文优化模型
+        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="BAAI/bge-m3",
+            device=best_device 
+        )
 
-# 尝试加载 BGE 精排模型 (如果安装了 FlagEmbedding)
-try:
-    from FlagEmbedding import FlagReranker
-    print("正在加载 BAAI 重排模型 (BAAI/bge-reranker-m3)...", file=sys.stderr)
-    # 对于 FlagReranker，如果是 cuda 一般自动能识别，也可以考虑将 use_fp16 置为 True 来提速
-    use_half_precision = (best_device == "cuda")
-    reranker = FlagReranker('BAAI/bge-reranker-m3', use_fp16=use_half_precision)
-    print("✅ 重排模型加载成功，搜索精排已启用！", file=sys.stderr)
-except ImportError:
-    reranker = None
-    print("⚠️ 提示: 未检测到 FlagEmbedding 库，高级重排(Rerank)功能暂不启用。如需体验更精准的搜索，请在终端运行 `pip install -U FlagEmbedding`。", file=sys.stderr)
+        # 尝试加载 BGE 精排模型
+        try:
+            from FlagEmbedding import FlagReranker
+            print("正在加载 BAAI 重排模型 (BAAI/bge-reranker-m3)...", file=sys.stderr)
+            use_half_precision = (best_device == "cuda")
+            reranker = FlagReranker('BAAI/bge-reranker-m3', use_fp16=use_half_precision)
+            print("✅ 重排模型加载成功，搜索精排已启用！", file=sys.stderr)
+        except ImportError:
+            reranker = None
+            print("⚠️ 提示: 未检测到 FlagEmbedding 库。", file=sys.stderr)
+    finally:
+        sys.stdout = _original_stdout
 
-# 获取数据库连接
-client = chromadb.PersistentClient(path=DB_PATH)
-print("✅ 数据库加载成功，服务启动完毕！", file=sys.stderr)
+    # 获取数据库连接
+    client = chromadb.PersistentClient(path=DB_PATH)
+    print("✅ 数据库加载成功，服务启动完毕！", file=sys.stderr)
+    _initialized = True
+
 
 
 # --- 2. 辅助函数集 (代码瘦身) ---
@@ -165,6 +196,7 @@ def add_file_to_knowledge(file_path: str, collection_name: str) -> str:
         file_path: 文件的完整路径，例如 "D:/项目/NSFC2026/耐心资本/论文1.md"
         collection_name: 强制要求！你想要放入的"项目数据库"名称（只能是小写字母/数字/下划线）。例如 "nsfc2026"
     """
+    lazy_init()
     file_path = resolve_fuzzy_path(file_path)
     if not os.path.exists(file_path):
         return f"错误：找不到文件 {file_path}。请检查是否因为中文特殊符号(比如引号)被错误转义。"
@@ -198,6 +230,7 @@ def search_knowledge(query: str, collection_name: str) -> str:
         query: 你的问题，例如 "项目进度的风险有哪些？"
         collection_name: 强制要求！你想要搜索的具体"项目数据库"名称。例如 "nsfc2026"。
     """
+    lazy_init()
     try:
         safe_name = sanitize_collection_name(collection_name)
         collection = client.get_collection(name=safe_name, embedding_function=ef)
