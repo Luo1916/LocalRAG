@@ -242,7 +242,7 @@ def search_knowledge(query: str, collection_name: str) -> str:
         return f"❌ 找不到知识库 '{collection_name}'，请确认名称是否正确或先入库。"
 
     try:
-        recall_n = 15 if reranker else 3
+        recall_n = 30 if reranker else 5
         results  = collection.query(query_texts=[query], n_results=recall_n)
         docs     = results["documents"][0]
         metas    = results["metadatas"][0]
