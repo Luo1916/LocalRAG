@@ -30,6 +30,7 @@ ef           = None   # 向量化模型
 reranker     = None   # 精排模型（可选）
 db_client    = None   # ChromaDB 客户端
 _initialized = False
+_init_error  = None   # 初始化失败时记录错误信息
 _init_lock   = threading.Lock()
 
 
@@ -94,12 +95,14 @@ def lazy_init():
 
 def background_init():
     """服务启动后在后台线程预热模型，避免首次工具调用阻塞"""
+    global _init_error
     with _init_lock:
         try:
             lazy_init()
         except Exception as e:
             import traceback
-            print(f"❌ 后台预热失败: {e}", file=sys.stderr)
+            _init_error = f"{type(e).__name__}: {e}"
+            print(f"❌ 后台预热失败: {_init_error}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
 
 threading.Thread(target=background_init, daemon=True).start()
@@ -208,10 +211,12 @@ def add_file_to_knowledge(file_path: str, collection_name: str) -> str:
 
 @mcp.tool()
 def check_knowledge_status() -> str:
-    """[状态] 查看后台入库队列中还有多少文件待处理。"""
+    """[状态] 查看后台入库队列中还有多少文件待处理，以及模型初始化状态。"""
     n = task_queue.qsize()
+    if _init_error:
+        return f"❌ 模型初始化失败，请检查环境！\n错误信息: {_init_error}\n\n可能原因:\n- 依赖库未安装在当前 venv\n- 显存不足\n- 模型文件损坏"
     if not _initialized:
-        return f"⏳ 模型正在后台预热（约需 20-30 秒），队列中有 {n} 个文件等待处理。"
+        return f"⏳ 模型正在后台预热（约需 20-40 秒），队列中有 {n} 个文件等待处理。"
     return f"✅ 队列已清空，所有文件处理完毕！" if n == 0 else f"⏳ 队列中还有 {n} 个文件正在处理。"
 
 
