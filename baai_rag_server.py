@@ -106,7 +106,7 @@ def background_init():
             print(f"❌ 后台预热失败: {_init_error}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
 
-threading.Thread(target=background_init, daemon=True).start()
+# threading.Thread(target=background_init, daemon=True).start()  # 已关闭自动后台预热，改为真正的懒加载
 
 
 # --- 辅助函数 ---
@@ -217,7 +217,7 @@ def check_knowledge_status() -> str:
     if _init_error:
         return f"❌ 模型初始化失败，请检查环境！\n错误信息: {_init_error}\n\n可能原因:\n- 依赖库未安装在当前 venv\n- 显存不足\n- 模型文件损坏"
     if not _initialized:
-        return f"⏳ 模型正在后台预热（约需 20-40 秒），队列中有 {n} 个文件等待处理。"
+        return f"⏳ 模型尚未初始化/还在预热中。队列中有 {n} 个文件等待处理。"
     return f"✅ 队列已清空，所有文件处理完毕！" if n == 0 else f"⏳ 队列中还有 {n} 个文件正在处理。"
 
 
@@ -231,7 +231,11 @@ def search_knowledge(query: str, collection_name: str) -> str:
         collection_name: 知识库名称，例如 "nsfc2026"。不确定时请先调用 list_knowledge_collections。
     """
     if not _initialized:
-        return "⏳ 模型正在后台预热（首次启动约需 20-30 秒），请稍后重试。"
+        with _init_lock:
+            try:
+                lazy_init()
+            except Exception as e:
+                return f"❌ 模型初始化失败: {e}"
 
     try:
         safe_name  = sanitize_collection_name(collection_name)
@@ -278,8 +282,15 @@ def list_knowledge_collections() -> str:
     [列表] 列出当前数据库中所有已存在的知识库名称及文档块数量。
     在不确定 collection_name 时，请优先调用此工具，再调用 search_knowledge。
     """
-    if not _initialized or not db_client:
-        return "⏳ 数据库尚未初始化，请稍后重试（约需 20-40 秒预热）。"
+    if not _initialized:
+        with _init_lock:
+            try:
+                lazy_init()
+            except Exception as e:
+                return f"❌ 模型初始化失败: {e}"
+        
+    if not db_client:
+        return "❌ 数据库客户端未成功初始化。"
     try:
         collections = db_client.list_collections()
         if not collections:
