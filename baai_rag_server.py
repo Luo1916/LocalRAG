@@ -20,6 +20,7 @@ DB_PATH  = os.path.join(BASE_DIR, "chroma_db_data")
 os.environ["HF_HOME"]                 = os.path.join(BASE_DIR, "hf_models")
 os.environ["TOKENIZERS_PARALLELISM"]  = "false"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["HF_HUB_OFFLINE"]          = "0"  # 确保模型不被离线模式阻塞
 
 # --- MCP 服务初始化 ---
 mcp = FastMCP("Local Knowledge (BAAI)")
@@ -67,8 +68,8 @@ def lazy_init():
 
         try:
             from FlagEmbedding import FlagReranker
-            print("正在加载 BAAI/bge-reranker-m3 精排模型...", file=sys.stderr)
-            reranker = FlagReranker("BAAI/bge-reranker-m3", use_fp16=(best_device == "cuda"))
+            print("正在加载 BAAI/bge-reranker-v2-m3 精排模型...", file=sys.stderr)
+            reranker = FlagReranker("BAAI/bge-reranker-v2-m3", use_fp16=(best_device == "cuda"))
             print("✅ 精排模型加载完毕，Rerank 已启用。", file=sys.stderr)
         except ImportError:
             reranker = None
