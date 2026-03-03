@@ -1,6 +1,11 @@
+# 核心依赖
 mcp>=1.0.0
 chromadb>=0.4.0
 sentence-transformers>=2.2.0
 pypdf>=3.0.0
+
+# 推荐依赖 (用于检索精排)
 FlagEmbedding>=1.2.0
+
+# PyTorch 基础依赖 (GPU用户请参考 README 指定 CUDA 版本安装)
 torch>=2.0.0
