@@ -75,7 +75,19 @@ def lazy_init():
     finally:
         sys.stdout = _orig_stdout
 
-    db_client    = chromadb.PersistentClient(path=DB_PATH)
+    db_client = chromadb.PersistentClient(path=DB_PATH)
+
+    # --- CUDA Warmup：触发一次哑推理，将冷启动开销留在后台预热中 ---
+    # 目的：确保首次真实用户查询时 CUDA 算子已编译完毕，无需额外等待。
+    try:
+        print("正在进行 CUDA/模型 Warmup（哑推理）...", file=sys.stderr)
+        ef(["warmup"])
+        if reranker:
+            reranker.compute_score([["q", "a"]])
+        print("✅ Warmup 完成！首次查询将达到极速。", file=sys.stderr)
+    except Exception as _we:
+        print(f"⚠️ Warmup 异常（不影响主流程）: {_we}", file=sys.stderr)
+
     _initialized = True
     print("✅ 数据库就绪，MCP 服务已完全启动！", file=sys.stderr)
 
@@ -176,7 +188,9 @@ threading.Thread(target=background_worker, daemon=True).start()
 def add_file_to_knowledge(file_path: str, collection_name: str) -> str:
     """
     [入库] 读取本地 PDF/TXT/MD 文件，向量化后存入本地知识库。
-    此工具立即返回，文件在后台异步处理。可用 check_knowledge_status 查看进度。
+    此工具立即返回，文件在后台异步处理。
+    ⚠️ 注意：入库是异步的！请在收到成功提示后，用 check_knowledge_status 确认处理完毕，再进行查询。
+    可用 list_knowledge_collections 查看所有已创建的知识库名称。
     Args:
         file_path: 文件完整路径，例如 "D:/项目/论文.pdf"
         collection_name: 知识库名称（小写字母/数字/下划线，最少3字符），例如 "nsfc2026"
@@ -205,9 +219,10 @@ def check_knowledge_status() -> str:
 def search_knowledge(query: str, collection_name: str) -> str:
     """
     [检索] 在本地知识库中语义搜索相关内容。
+    📌 如果不确定 collection_name，请先调用 list_knowledge_collections 获取所有可用知识库名称，再传入本工具。
     Args:
         query: 查询问题，例如 "耐心资本的理论机制"
-        collection_name: 知识库名称，例如 "nsfc2026"
+        collection_name: 知识库名称，例如 "nsfc2026"。不确定时请先调用 list_knowledge_collections。
     """
     if not _initialized:
         return "⏳ 模型正在后台预热（首次启动约需 20-30 秒），请稍后重试。"
@@ -249,6 +264,26 @@ def search_knowledge(query: str, collection_name: str) -> str:
 
     except Exception as e:
         return f"查询出错: {e}"
+
+
+@mcp.tool()
+def list_knowledge_collections() -> str:
+    """
+    [列表] 列出当前数据库中所有已存在的知识库名称及文档块数量。
+    在不确定 collection_name 时，请优先调用此工具，再调用 search_knowledge。
+    """
+    if not _initialized or not db_client:
+        return "⏳ 数据库尚未初始化，请稍后重试（约需 20-40 秒预热）。"
+    try:
+        collections = db_client.list_collections()
+        if not collections:
+            return "📭 当前数据库中没有任何知识库，请先使用 add_file_to_knowledge 入库。"
+        lines = ["📚 已存在的知识库列表："]
+        for c in collections:
+            lines.append(f"  - **{c.name}**（共 {c.count()} 个文档块）")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ 获取知识库列表失败: {e}"
 
 
 if __name__ == "__main__":
